@@ -36,7 +36,7 @@ const FALLBACK_DATA=[{"no": "1", "name": "삼성전자", "market": "KOSPI", "cap
 let DATA=[];
 const SHEET_ID='19KwvbCAv8nR0QNw1RYU6a34Ek91FKyuVDSxL6WIJq5E';
 const SHEET_GID='0';
-const SHEET_CSV_URL=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
+const SHEET_GVIZ_URL=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?gid=${SHEET_GID}`;
 
 function parseCSV(text){
   const rows=[]; let row=[]; let cell=''; let quoted=false;
@@ -75,30 +75,34 @@ function sheetRowsToData(text){
   if(required.some(k=>idx[k]===undefined)) throw new Error('필수 열을 찾지 못했습니다. 헤더를 확인해 주세요.');
   return rows.slice(1).map((r,i)=>{const o={}; for(const k of Object.keys(aliases)) o[k]=idx[k]===undefined?'':(r[idx[k]]??''); if(!o.no)o.no=String(i+1); return o;}).filter(r=>r.name);
 }
-async function loadSheetData(){
+function loadSheetData(){
   const status=document.getElementById('sheetStatus');
   status.className='sheet-status loading'; status.textContent='● 연결 확인 중';
-  try{
-    const url=SHEET_CSV_URL+'&_t='+Date.now();
-    const res=await fetch(url,{cache:'no-store'});
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const text=await res.text();
-    if(!text || text.trim().startsWith('<')) throw new Error('CSV 응답을 받지 못했습니다.');
-    const rows=sheetRowsToData(text);
-    if(!rows.length) throw new Error('데이터가 비어 있습니다.');
-    DATA=rows;
-    status.className='sheet-status ok'; status.textContent='● Google Sheets 연결됨';
-    document.querySelector('.foot').innerHTML='※ 데이터 출처: 연결된 Google 스프레드시트 (실시간 불러오기).<br>※ 실적은 추정치이며 실제 발표 결과와 다를 수 있습니다. 빈 값 또는 ‘-’는 원문에 수치가 없거나 표시되지 않은 항목입니다. 본 화면은 데이터 탐색용이며 투자 판단의 유일한 근거로 사용하지 마세요.';
-    updateStats(); render();
-  }catch(e){
-    DATA=[];
-    status.className='sheet-status error'; status.textContent='● Google Sheets 연결 실패';
-    document.querySelector('.foot').innerHTML='※ Google 스프레드시트를 불러오지 못했습니다. 공유 설정과 시트 주소를 확인해 주세요. 기존 저장 데이터는 사용하지 않습니다.<br>※ 실적은 추정치이며 실제 발표 결과와 다를 수 있습니다.';
-    updateStats(); render();
-    console.warn('Google Sheets load failed:',e);
-  }
+  return new Promise((resolve,reject)=>{
+    const cb='sheetCallback_'+Date.now();
+    const script=document.createElement('script');
+    const cleanup=()=>{try{delete window[cb]}catch(e){} script.remove()};
+    const timer=setTimeout(()=>{cleanup(); DATA=[]; status.className='sheet-status error'; status.textContent='● Google Sheets 연결 실패'; updateStats(); render(); reject(new Error('Google Sheets 응답 시간 초과'))},12000);
+    window[cb]=(payload)=>{
+      clearTimeout(timer);
+      try{
+        if(!payload || !payload.table) throw new Error('Google Sheets 응답이 올바르지 않습니다.');
+        const cols=payload.table.cols.map(c=>c.label||c.id||'');
+        const rows=payload.table.rows.map(r=>cols.map((_,i)=>{const c=r.c&&r.c[i]; return c&&c.f!=null?String(c.f):(c&&c.v!=null?String(c.v):'')}));
+        const csv=[cols,...rows].map(row=>row.map(v=>'\"'+String(v).replace(/\"/g,'\"\"')+'\"').join(',')).join('\n');
+        const data=sheetRowsToData(csv);
+        if(!data.length) throw new Error('스프레드시트 데이터가 비어 있습니다.');
+        DATA=data;
+        status.className='sheet-status ok'; status.textContent='● Google Sheets 연결됨';
+        document.querySelector('.foot').innerHTML='※ 데이터 출처: 연결된 Google 스프레드시트 (실시간 불러오기).<br>※ 실적은 추정치이며 실제 발표 결과와 다를 수 있습니다. 빈 값 또는 ‘-’는 원문에 수치가 없거나 표시되지 않은 항목입니다. 본 화면은 데이터 탐색용이며 투자 판단의 유일한 근거로 사용하지 마세요.';
+        updateStats(); render(); cleanup(); resolve(data);
+      }catch(e){clearTimeout(timer); cleanup(); DATA=[]; status.className='sheet-status error'; status.textContent='● Google Sheets 연결 실패'; updateStats(); render(); reject(e)}
+    };
+    script.onerror=()=>{clearTimeout(timer); cleanup(); DATA=[]; status.className='sheet-status error'; status.textContent='● Google Sheets 연결 실패'; updateStats(); render(); reject(new Error('Google Sheets 스크립트 요청 실패'))};
+    script.src=SHEET_GVIZ_URL+'&tqx=responseHandler:'+cb+'&_t='+Date.now();
+    document.head.appendChild(script);
+  });
 }
-
 
 const $=id=>document.getElementById(id); const filterPanel=document.querySelector('.filter-panel'); $('filterToggle').addEventListener('click',()=>{const expanded=filterPanel.classList.toggle('filters-expanded');$('filterToggle').setAttribute('aria-expanded',String(expanded));}); const numericKeys=['no','cap','revenue','op','net','revYoY','opYoY','netYoY','month','dy','ttm','forward','mvp','opm'];
 const FILTERS=[['cap','시가총액(억원)'],['revenue','매출(억원)'],['op','영업이익(억원)'],['net','순이익(억원)'],['revYoY','매출 YoY(%)'],['opYoY','영업이익 YoY(%)'],['netYoY','순이익 YoY(%)'],['month','결산월'],['dy','배당수익률(%)'],['ttm','TTM PER'],['forward','12F PER'],['mvp','MVP'],['opm','OPM(%)']];
@@ -111,5 +115,5 @@ function pct(v){let n=num(v);return n===null?false:n>0}function cell(v,cls=''){r
 function render(){const all=filtered(),start=(page-1)*pageSize,shown=all.slice(start,start+pageSize);$('resultMeta').textContent=`${all.length.toLocaleString()}개 종목 표시 · ${DATA.length.toLocaleString()}개 중`;$('pageMeta').textContent=`${all.length?start+1:0}–${Math.min(start+pageSize,all.length)} / ${all.length.toLocaleString()}개`;const body=$('tbody');if(!shown.length){body.innerHTML='<tr><td class="empty" colspan="15">조건에 맞는 종목이 없습니다.</td></tr>'}else body.innerHTML=shown.map(r=>`<tr><td>${r.no}</td><td><span class="stock">${r.name}</span></td><td><span class="market ${r.market==='KOSPI'?'kospi':'kosdaq'}">${r.market}</span></td>${cell(r.cap)}${cell(r.revenue)}${cell(r.op)}${cell(r.net)}${cell(r.revYoY,pct(r.revYoY)?'positive':num(r.revYoY)<0?'negative':'')}${cell(r.opYoY,pct(r.opYoY)?'positive':num(r.opYoY)<0?'negative':'')}${cell(r.netYoY,pct(r.netYoY)?'positive':num(r.netYoY)<0?'negative':'')}${cell(r.dy)}${cell(r.ttm)}${cell(r.forward)}${cell(r.mvp)}${cell(r.opm)}</tr>`).join('');let pages=Math.ceil(all.length/pageSize);$('pages').innerHTML='';const add=(label,p,disabled=false,active=false)=>{let b=document.createElement('button');b.textContent=label;if(active)b.className='active';b.disabled=disabled;b.onclick=()=>{page=p;render()};$('pages').appendChild(b)};add('이전',Math.max(1,page-1),page===1);let lo=Math.max(1,page-2),hi=Math.min(pages,lo+4);for(let p=lo;p<=hi;p++)add(p,p,false,p===page);add('다음',Math.min(pages,page+1),page>=pages)}
 function updateStats(){$('stockCount').textContent=DATA.length.toLocaleString(); const dates=DATA.map(r=>r.date||r.asOfDate||r['기준일']).filter(Boolean); if(dates.length) $('asOfDate').textContent=dates[0];}
 function syncQuickButtons(){document.querySelectorAll('.quick-btn').forEach(c=>c.classList.toggle('active',quickPresets.has(c.dataset.preset)));}
-['search','market'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',()=>{page=1;render();}));document.querySelectorAll('[data-min-key],[data-max-key]').forEach(input=>input.addEventListener('input',()=>{page=1;render();}));$('refreshData').onclick=()=>loadSheetData();$('reset').onclick=()=>{$('search').value='';$('market').value='all';document.querySelectorAll('[data-min-key],[data-max-key]').forEach(input=>input.value='');quickPresets.clear();page=1;syncQuickButtons();render()};document.querySelectorAll('.quick-btn').forEach(b=>b.onclick=()=>{const key=b.dataset.preset;if(quickPresets.has(key))quickPresets.delete(key);else quickPresets.add(key);page=1;syncQuickButtons();render()});document.querySelectorAll('.sort').forEach(b=>b.onclick=()=>{let k=b.dataset.key;if(sortKey===k)sortDir*=-1;else{sortKey=k;sortDir=k==='name'?1:-1}render()});document.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{page=1;render()});$('export').onclick=()=>{const rows=filtered(),headers=['No','종목명','시장','시가총액(억원)','매출(억원)','영업이익(억원)','순이익(억원)','매출 YoY','영업이익 YoY','순이익 YoY','결산월','배당수익률','TTM PER','12F PER','MVP','OPM'];const keys=['no','name','market','cap','revenue','op','net','revYoY','opYoY','netYoY','month','dy','ttm','forward','mvp','opm'];const csv=[headers,...rows.map(r=>keys.map(k=>r[k]??''))].map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='3분기_실적_스크리너.csv';a.click();URL.revokeObjectURL(url)};loadSheetData();
+['search','market'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',()=>{page=1;render();}));document.querySelectorAll('[data-min-key],[data-max-key]').forEach(input=>input.addEventListener('input',()=>{page=1;render();}));$('refreshData').onclick=()=>loadSheetData().catch(()=>{});$('reset').onclick=()=>{$('search').value='';$('market').value='all';document.querySelectorAll('[data-min-key],[data-max-key]').forEach(input=>input.value='');quickPresets.clear();page=1;syncQuickButtons();render()};document.querySelectorAll('.quick-btn').forEach(b=>b.onclick=()=>{const key=b.dataset.preset;if(quickPresets.has(key))quickPresets.delete(key);else quickPresets.add(key);page=1;syncQuickButtons();render()});document.querySelectorAll('.sort').forEach(b=>b.onclick=()=>{let k=b.dataset.key;if(sortKey===k)sortDir*=-1;else{sortKey=k;sortDir=k==='name'?1:-1}render()});document.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{page=1;render()});$('export').onclick=()=>{const rows=filtered(),headers=['No','종목명','시장','시가총액(억원)','매출(억원)','영업이익(억원)','순이익(억원)','매출 YoY','영업이익 YoY','순이익 YoY','결산월','배당수익률','TTM PER','12F PER','MVP','OPM'];const keys=['no','name','market','cap','revenue','op','net','revYoY','opYoY','netYoY','month','dy','ttm','forward','mvp','opm'];const csv=[headers,...rows.map(r=>keys.map(k=>r[k]??''))].map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='3분기_실적_스크리너.csv';a.click();URL.revokeObjectURL(url)};loadSheetData().catch(()=>{});
 </script></body></html>
